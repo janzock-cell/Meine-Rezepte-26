@@ -1,13 +1,11 @@
-
 {
   "name": "azubi-rezepte-sammlung",
   "version": "1.1.0",
   "private": true,
   "description": "A hybrid local/cloud recipe generator for apprentices.",
   "scripts": {
-    "dev": "netlify dev",
-    "build": "esbuild index.tsx --bundle --outfile=index.js --format=esm --define:process.env.API_KEY=\"\\\"$API_KEY\\\"\"",
-    "test": "jest"
+    "dev": "esbuild index.tsx --bundle --outfile=index.js --format=esm --watch",
+    "build": "esbuild index.tsx --bundle --outfile=index.js --format=esm --minify"
   },
   "dependencies": {
     "@google/genai": "^0.14.0",

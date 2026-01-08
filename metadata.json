@@ -1,6 +1,6 @@
 {
-  "name": "lecker. | Gourmet AI",
-  "description": "Rezepte NUR nach deinem Wunsch! Foto vom Kühlschrank oder schnelle Gerichte von Top-Köchen.",
+  "name": "ich machs dir ... lecker!",
+  "description": "Premium Gourmet AI Cooking Assistant",
   "requestFramePermissions": [
     "camera"
   ]

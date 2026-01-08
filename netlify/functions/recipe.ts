@@ -2,144 +2,116 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import type { Handler } from "@netlify/functions";
 
-// --- Gemini AI Setup ---
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+// Always initialize with named parameters and use process.env.API_KEY
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-// --- Schemas for Structured Output ---
 const recipeSchema = {
   type: Type.OBJECT,
   properties: {
-    recipeName: {
-      type: Type.STRING,
-      description: "Der Name des Rezepts."
-    },
-    description: {
-        type: Type.STRING,
-        description: "Eine kurze, ansprechende Beschreibung des Gerichts."
-    },
-    ingredients: {
-      type: Type.ARRAY,
-      description: "Eine Liste der Zutaten, die für das Rezept benötigt werden. Starte jede Zeile mit der Menge und Einheit (z.B. '500g Nudeln').",
-      items: { type: Type.STRING }
-    },
-    instructions: {
-      type: Type.ARRAY,
-      description: "Eine schrittweise Anleitung zur Zubereitung des Gerichts.",
-      items: { type: Type.STRING }
-    },
+    recipeName: { type: Type.STRING },
+    description: { type: Type.STRING },
+    ingredients: { type: Type.ARRAY, items: { type: Type.STRING } },
+    instructions: { type: Type.ARRAY, items: { type: Type.STRING } },
+    nutrition: {
+        type: Type.OBJECT,
+        properties: {
+            calories: { type: Type.STRING },
+            protein: { type: Type.STRING },
+            carbs: { type: Type.STRING },
+            fat: { type: Type.STRING }
+        },
+        required: ["calories", "protein", "carbs", "fat"]
+    }
   },
-  required: ["recipeName", "description", "ingredients", "instructions"],
+  required: ["recipeName", "description", "ingredients", "instructions", "nutrition"],
 };
 
-const ocrSchema = {
+const combinedScanSchema = {
     type: Type.OBJECT,
     properties: {
-        isReadable: {
-            type: Type.BOOLEAN,
-            description: "Gibt an, ob der Text auf dem Bild insgesamt lesbar war."
+        isReadable: { 
+            type: Type.BOOLEAN, 
+            description: "True, wenn Lebensmittel oder ein Kühlschrankinhalt eindeutig erkannt wurden." 
         },
-        unreadableReason: {
-            type: Type.STRING,
-            description: "Optionaler Grund, warum das Bild nicht lesbar war (z.B. 'verschwommen', 'handschriftlich')."
+        unreadableReason: { 
+            type: Type.STRING, 
+            description: "Falls isReadable false ist, nenne den Grund: 'Bild nicht lesbar', 'Lichtverhältnisse schlecht' oder 'Zutaten nicht erkannt'." 
         },
-        recipeName: {
-            type: Type.STRING,
-            description: "Der Name des Gerichts, wenn auf dem Bild erkennbar."
-        },
-        ingredients: {
-            type: Type.ARRAY,
-            description: "Eine Liste der auf dem Bild erkannten Zutaten.",
-            items: { type: Type.STRING }
-        },
-        instructions: {
-            type: Type.ARRAY,
-            description: "Eine Liste der auf dem Bild erkannten Zubereitungsschritte.",
-            items: { type: Type.STRING }
+        recipe: {
+            type: Type.OBJECT,
+            properties: { 
+              ingredients: { type: Type.ARRAY, items: { type: Type.STRING } } 
+            },
+            required: ["ingredients"]
         }
     },
     required: ["isReadable"]
 };
 
-
-// --- Netlify Function Handler ---
 export const handler: Handler = async (event) => {
-  if (event.httpMethod !== 'POST' || !event.body) {
-    return { statusCode: 405, body: JSON.stringify({ error: 'Method Not Allowed' }) };
-  }
+  if (event.httpMethod !== 'POST' || !event.body) return { statusCode: 405, body: 'Not Allowed' };
+  if (!process.env.API_KEY) return { statusCode: 500, body: JSON.stringify({ error: "API Key fehlt in der Umgebung" }) };
 
   try {
     const body = JSON.parse(event.body);
-    const { type } = body;
+    // Use gemini-3-pro-preview for complex reasoning and high-quality recipe generation
+    const modelName = 'gemini-3-pro-preview'; 
 
-    let result;
-    
-    if (type === 'generate') {
-      const { prompt: dishPrompt, difficulty, wishes, servings } = body;
-      const prompt = `
-        Erstelle ein einfaches und günstiges Rezept für Lehrlinge basierend auf den folgenden Angaben.
-        Gib die Antwort als einzelnes JSON-Objekt zurück, das dem bereitgestellten Schema entspricht. Gib keinen Markdown oder zusätzlichen Text aus.
-
-        Gericht: "${dishPrompt}"
-        Schwierigkeitsgrad: "${difficulty}"
-        Anzahl Portionen: ${servings || 2}
-        Zusätzliche Wünsche: "${wishes || 'Keine'}"
-      `;
-      result = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: recipeSchema,
+    if (body.type === 'generate') {
+      const result = await ai.models.generateContent({
+        model: modelName,
+        contents: { parts: [{ text: `Handele als Profi-Koch. Erstelle ein Rezept für: ${body.prompt}. Schwierigkeit: ${body.difficulty || 'leicht'}. Personen: ${body.servings || 2}. Wünsche: ${body.wishes || 'keine'}.` }] },
+        config: { 
+            responseMimeType: "application/json", 
+            responseSchema: recipeSchema,
+            systemInstruction: "Erstelle ein hochqualitatives, deutsches Gourmet-Rezept mit präzisen Mengenangaben und Nährwertschätzung."
         },
       });
-
-    } else if (type === 'ocr') {
-      const { image, mimeType } = body;
-      const imagePart = {
-        inlineData: { mimeType, data: image },
+      // Correctly access the .text property from the response
+      return { 
+          statusCode: 200, 
+          headers: { "Content-Type": "application/json" },
+          body: result.text 
       };
-      const prompt = `
-            Analysiere das folgende Bild eines Rezepts. 
+
+    } else if (body.type === 'scan-to-recipe') {
+      const result = await ai.models.generateContent({
+        model: modelName,
+        contents: { 
+            parts: [
+                { inlineData: { mimeType: body.mimeType, data: body.image } }, 
+                { text: "Welche Lebensmittel sind auf diesem Bild zu sehen? Liste sie auf." }
+            ] 
+        },
+        config: { 
+            responseMimeType: "application/json", 
+            responseSchema: combinedScanSchema,
+            systemInstruction: `Du bist ein Vision-Experte für Lebensmittel. 
+            Prüfe das Bild zuerst auf Qualität.
             
-            **Qualitätshinweis:** Das Bild könnte schlechte Lichtverhältnisse, Schatten, Rauschen oder eine geringe Auflösung aufweisen.
-            **Spezialanweisungen für Bildstörungen:**
-            - Kompensiere visuelle Artefakte, Überbelichtung oder Unterbelichtung mental.
-            - Gib dein Bestes, um auch unklare oder handschriftliche Texte zu entziffern.
-            - Konzentriere dich darauf, den Sinn und die wesentlichen Informationen (Zutaten, Schritte) zu erfassen.
-            - Wenn ein Wort mehrdeutig ist, versuche, es aus dem kulinarischen Kontext zu erschließen.
-
-            **Anweisungen:**
-            1. Wenn der Text völlig unleserlich ist, setze 'isReadable' auf 'false'.
-            2. Wenn das Rezept entziffert werden kann, setze 'isReadable' auf 'true' und extrahiere die Daten.
-            3. Gib die Antwort als einzelnes JSON-Objekt zurück, das dem bereitgestellten Schema entspricht.
-        `;
-
-      result = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: { parts: [imagePart, { text: prompt }] },
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: ocrSchema,
+            FEHLER-KATEGORIEN:
+            - Wenn das Bild extrem unscharf ist oder keine Lebensmittel zeigt: setze isReadable=false und unreadableReason='Bild nicht lesbar'.
+            - Wenn es zu dunkel oder überbelichtet ist: setze isReadable=false und unreadableReason='Lichtverhältnisse schlecht'.
+            - Wenn alles ok ist, aber absolut keine Lebensmittel/Zutaten zu finden sind: setze isReadable=false und unreadableReason='Zutaten nicht erkannt'.
+            
+            ERFOLG:
+            - Wenn Lebensmittel gefunden werden: setze isReadable=true und liste ALLE gefundenen Zutaten in 'recipe.ingredients' auf.`
         },
       });
-
-    } else {
-      return { statusCode: 400, body: JSON.stringify({ error: 'Invalid request type specified.' }) };
+      // Correctly access the .text property from the response
+      return { 
+          statusCode: 200, 
+          headers: { "Content-Type": "application/json" },
+          body: result.text 
+      };
     }
-    
-    const responseText = result.text.trim();
-
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: responseText,
-    };
-
-  } catch (error) {
-    console.error("Error in Netlify function:", error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: "An internal server error occurred while processing the request." }),
+    return { statusCode: 400, body: 'Ungültiger Request-Typ' };
+  } catch (error: any) {
+    console.error("Netlify Function Error:", error);
+    return { 
+        statusCode: 500, 
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: error.message || "Interner Serverfehler" }) 
     };
   }
 };
